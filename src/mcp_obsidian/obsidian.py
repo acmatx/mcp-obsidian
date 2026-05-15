@@ -1,3 +1,4 @@
+import re
 import requests
 import urllib.parse
 import os
@@ -115,12 +116,12 @@ class Obsidian():
     
     def append_content(self, filepath: str, content: str) -> Any:
         url = f"{self.get_base_url()}/vault/{filepath}"
-        
+
         def call_fn():
             response = requests.post(
-                url, 
-                headers=self._get_headers() | {'Content-Type': 'text/markdown'}, 
-                data=content,
+                url,
+                headers=self._get_headers() | {'Content-Type': 'text/markdown; charset=utf-8'},
+                data=content.encode("utf-8"),
                 verify=self.verify_ssl,
                 timeout=self.timeout
             )
@@ -128,19 +129,50 @@ class Obsidian():
             return None
 
         return self._safe_call(call_fn)
-    
+
     def patch_content(self, filepath: str, operation: str, target_type: str, target: str, content: str) -> Any:
+        try:
+            return self._patch_content_raw(filepath, operation, target_type, target, content)
+        except Exception as e:
+            # The Local REST API requires fully qualified heading paths like
+            # "Outer::Inner". If the caller passed a bare heading name and the
+            # server replied with 40080 invalid-target, try to auto-qualify by
+            # parsing the file's heading hierarchy. See issue #125.
+            if target_type != "heading" or "::" in target or "Error 40080" not in str(e):
+                raise
+
+            try:
+                file_content = self.get_file_contents(filepath)
+            except Exception:
+                raise e
+
+            candidates = _find_heading_paths(file_content, target)
+            if len(candidates) == 1:
+                qualified = candidates[0]
+                return self._patch_content_raw(filepath, operation, target_type, qualified, content)
+            if len(candidates) > 1:
+                raise Exception(
+                    f"Ambiguous heading '{target}'. Candidates: {', '.join(candidates)}. "
+                    "Specify the qualified path with '::' delimiter."
+                )
+            raise
+
+    def _patch_content_raw(self, filepath: str, operation: str, target_type: str, target: str, content: str) -> Any:
         url = f"{self.get_base_url()}/vault/{filepath}"
-        
+
+        # NOTE: The Local REST API rejects 'text/markdown; charset=utf-8' on
+        # PATCH (error 40012) — its PATCH parser only accepts the plain
+        # 'text/markdown' form. We still send the body as utf-8 bytes so the
+        # encoding is unambiguous on the wire.
         headers = self._get_headers() | {
             'Content-Type': 'text/markdown',
             'Operation': operation,
             'Target-Type': target_type,
             'Target': urllib.parse.quote(target)
         }
-        
+
         def call_fn():
-            response = requests.patch(url, headers=headers, data=content, verify=self.verify_ssl, timeout=self.timeout)
+            response = requests.patch(url, headers=headers, data=content.encode("utf-8"), verify=self.verify_ssl, timeout=self.timeout)
             response.raise_for_status()
             return None
 
@@ -148,12 +180,12 @@ class Obsidian():
 
     def put_content(self, filepath: str, content: str) -> Any:
         url = f"{self.get_base_url()}/vault/{filepath}"
-        
+
         def call_fn():
             response = requests.put(
-                url, 
-                headers=self._get_headers() | {'Content-Type': 'text/markdown'}, 
-                data=content,
+                url,
+                headers=self._get_headers() | {'Content-Type': 'text/markdown; charset=utf-8'},
+                data=content.encode("utf-8"),
                 verify=self.verify_ssl,
                 timeout=self.timeout
             )
@@ -289,3 +321,39 @@ class Obsidian():
             return response.json()
 
         return self._safe_call(call_fn)
+
+
+_HEADING_RE = re.compile(r"^(#+)\s+(.+?)\s*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def _find_heading_paths(content: str, target: str) -> list[str]:
+    """Return fully-qualified heading paths whose last segment matches target case-insensitively.
+
+    Headings inside fenced code blocks (``` or ~~~) are ignored. The qualified
+    path joins all enclosing heading texts with '::' (matching the Local REST
+    API's heading-target syntax).
+    """
+    in_fence = False
+    stack: list[tuple[int, str]] = []
+    matches: list[str] = []
+    target_lower = target.lower()
+
+    for line in content.split("\n"):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _HEADING_RE.match(line)
+        if not m:
+            continue
+        level = len(m.group(1))
+        text = m.group(2).strip()
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, text))
+        if text.lower() == target_lower:
+            matches.append("::".join(t for _, t in stack))
+
+    return matches

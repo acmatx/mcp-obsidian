@@ -235,7 +235,13 @@ class PatchContentToolHandler(ToolHandler):
    def get_tool_description(self):
        return Tool(
            name=self.name,
-           description="Insert content into an existing note relative to a heading, block reference, or frontmatter field.",
+           description=(
+               "Insert content into an existing note relative to a heading, block reference, "
+               "or frontmatter field. For target_type='heading', target must be the fully "
+               "qualified heading path joined with '::' (e.g. 'Outer::Inner'). Bare heading "
+               "names (without '::') will be auto-qualified if they match exactly one heading "
+               "in the file."
+           ),
            inputSchema={
                "type": "object",
                "properties": {
@@ -255,8 +261,13 @@ class PatchContentToolHandler(ToolHandler):
                        "enum": ["heading", "block", "frontmatter"]
                    },
                    "target": {
-                       "type": "string", 
-                       "description": "Target identifier (heading path, block reference, or frontmatter field)"
+                       "type": "string",
+                       "description": (
+                           "Target identifier. For target_type='heading': fully qualified "
+                           "path with '::' delimiter, e.g. 'Section::Subsection'. Bare names "
+                           "(no '::') are auto-qualified if unambiguous. For 'block': the "
+                           "block reference id. For 'frontmatter': the YAML field name."
+                       )
                    },
                    "content": {
                        "type": "string",
