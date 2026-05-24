@@ -1,8 +1,11 @@
+import io
 import re
 import requests
 import urllib.parse
 import os
 from typing import Any
+
+import frontmatter
 
 class Obsidian():
     def __init__(
@@ -391,6 +394,52 @@ class Obsidian():
 
         return self._safe_call(call_fn)
 
+
+    def set_frontmatter(self, filepath: str, fields: dict, mode: str = "merge") -> dict:
+        """Set one or more frontmatter fields on a note, creating fields if needed.
+
+        Unlike patch_content with target_type='frontmatter' (which requires the
+        target field to already exist — the Local REST API returns 40080 if not),
+        this method does a full read-modify-write using python-frontmatter so it
+        can ADD new fields cleanly. YAML serialization is delegated to python-
+        frontmatter to preserve formatting and ordering as much as possible.
+
+        Args:
+            filepath: Vault-relative path.
+            fields: Mapping of field-name -> value. Values are serialized as YAML;
+                lists, dicts, dates, and primitives all work.
+            mode: "merge" (default) keeps existing fields not mentioned in `fields`;
+                "replace" wipes existing frontmatter and uses only `fields`.
+
+        Returns:
+            {"changed": [field_names], "frontmatter": {...new full frontmatter...}}
+        """
+        if mode not in ("merge", "replace"):
+            raise ValueError(f"mode must be 'merge' or 'replace', got {mode!r}")
+
+        existing_text = self.get_file_contents(filepath)
+        post = frontmatter.loads(existing_text)
+
+        changed: list[str] = []
+        if mode == "replace":
+            for k in list(post.metadata.keys()):
+                if k not in fields:
+                    changed.append(k)
+            post.metadata = dict(fields)
+            changed.extend(k for k in fields if k not in changed)
+        else:
+            for k, v in fields.items():
+                if post.metadata.get(k) != v:
+                    changed.append(k)
+                post.metadata[k] = v
+
+        # Serialize back. python-frontmatter writes `---\n<yaml>---\n\n<content>`.
+        buf = io.BytesIO()
+        frontmatter.dump(post, buf)
+        new_text = buf.getvalue().decode("utf-8")
+
+        self.put_content(filepath, new_text)
+        return {"changed": changed, "frontmatter": dict(post.metadata)}
 
     def dataview(self, query: str) -> Any:
         """Execute an arbitrary Dataview DQL query against the vault.

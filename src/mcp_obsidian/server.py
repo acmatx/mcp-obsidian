@@ -58,6 +58,7 @@ add_tool_handler(tools.RecentPeriodicNotesToolHandler())
 add_tool_handler(tools.RecentChangesToolHandler())
 add_tool_handler(tools.DataviewToolHandler())
 add_tool_handler(tools.BatchWriteToolHandler())
+add_tool_handler(tools.SetFrontmatterToolHandler())
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:

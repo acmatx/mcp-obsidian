@@ -736,6 +736,59 @@ class RecentChangesToolHandler(ToolHandler):
         ]
 
 
+class SetFrontmatterToolHandler(ToolHandler):
+    def __init__(self):
+        super().__init__("obsidian_set_frontmatter")
+
+    def get_tool_description(self):
+        return Tool(
+            name=self.name,
+            description=(
+                "Add or update frontmatter fields on a note. Handles both ADDING new "
+                "fields (which patch_content with target_type='frontmatter' cannot do — "
+                "it returns 40080 invalid-target) and updating existing ones. "
+                "Uses read-modify-write via python-frontmatter for safe YAML serialization. "
+                "Use this for any change to frontmatter; use patch_content only for body "
+                "content (headings, blocks) where surgical insertion matters."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {
+                        "type": "string",
+                        "description": "Vault-relative path"
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": (
+                            "Mapping of frontmatter field-name -> value. Values can be "
+                            "string, number, boolean, list, dict, or ISO date string. "
+                            "Example: {\"status\": \"active\", \"tags\": [\"project\", \"q2\"]}"
+                        )
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["merge", "replace"],
+                        "description": (
+                            "merge (default): preserve frontmatter fields not mentioned in `fields`. "
+                            "replace: wipe existing frontmatter and use only `fields`."
+                        )
+                    }
+                },
+                "required": ["filepath", "fields"]
+            }
+        )
+
+    def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+        if "filepath" not in args or "fields" not in args:
+            raise RuntimeError("filepath and fields arguments required")
+        if not isinstance(args["fields"], dict) or not args["fields"]:
+            raise RuntimeError("fields must be a non-empty object")
+        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        result = api.set_frontmatter(args["filepath"], args["fields"], args.get("mode", "merge"))
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
 class DataviewToolHandler(ToolHandler):
     def __init__(self):
         super().__init__("obsidian_dataview")
