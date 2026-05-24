@@ -797,14 +797,15 @@ class DataviewToolHandler(ToolHandler):
         return Tool(
             name=self.name,
             description=(
-                "Execute an arbitrary Dataview DQL query against the vault. Use for "
+                "Execute a Dataview TABLE query against the vault. Use for "
                 "property-based aggregation, computed columns, grouping, sorting — "
-                "anything you would write a Dataview block for. Requires the "
+                "anything you would write a Dataview TABLE block for. Requires the "
                 "Dataview community plugin to be installed and enabled. "
-                "Returns parsed JSON results: TABLE → list of "
-                "{filename, result:{col:value,...}}; LIST → list of "
-                "{filename, result:<value>}; TASK → list of "
-                "{filename, result:[task,...]}. "
+                "NOTE: The Local REST API plugin only supports TABLE queries — "
+                "LIST and TASK forms return errorCode 40070. Express LIST as "
+                "TABLE without columns (e.g. 'TABLE FROM #urgent') and TASK via "
+                "a manual filter on the file body. "
+                "Returns: list of {filename, result:{col:value,...}}. "
                 "Example: 'TABLE file.mtime FROM \"AI/projects\" WHERE status = \"active\" SORT file.mtime DESC LIMIT 10'. "
                 "Use simple_search/complex_search instead for text-content matching; use this for structured queries over frontmatter properties."
             ),
