@@ -734,3 +734,128 @@ class RecentChangesToolHandler(ToolHandler):
                 text=json.dumps(results, indent=2)
             )
         ]
+
+
+class DataviewToolHandler(ToolHandler):
+    def __init__(self):
+        super().__init__("obsidian_dataview")
+
+    def get_tool_description(self):
+        return Tool(
+            name=self.name,
+            description=(
+                "Execute an arbitrary Dataview DQL query against the vault. Use for "
+                "property-based aggregation, computed columns, grouping, sorting — "
+                "anything you would write a Dataview block for. Requires the "
+                "Dataview community plugin to be installed and enabled. "
+                "Returns parsed JSON results: TABLE → list of "
+                "{filename, result:{col:value,...}}; LIST → list of "
+                "{filename, result:<value>}; TASK → list of "
+                "{filename, result:[task,...]}. "
+                "Example: 'TABLE file.mtime FROM \"AI/projects\" WHERE status = \"active\" SORT file.mtime DESC LIMIT 10'. "
+                "Use simple_search/complex_search instead for text-content matching; use this for structured queries over frontmatter properties."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "DQL query string. Multi-line is supported (use real newlines, "
+                            "not literal \\n). Folder references inside FROM clauses MUST be "
+                            "double-quoted: FROM \"AI/projects\". Tag references use # prefix: "
+                            "FROM #project. See https://blacksmithgu.github.io/obsidian-dataview/queries/"
+                        )
+                    }
+                },
+                "required": ["query"]
+            }
+        )
+
+    def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+        if "query" not in args:
+            raise RuntimeError("query argument required")
+        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        results = api.dataview(args["query"])
+        return [TextContent(type="text", text=json.dumps(results, indent=2))]
+
+
+class BatchWriteToolHandler(ToolHandler):
+    def __init__(self):
+        super().__init__("obsidian_batch_write")
+
+    def get_tool_description(self):
+        return Tool(
+            name=self.name,
+            description=(
+                "Apply a sequence of write operations to the vault in order. Use to "
+                "amortize round-trip cost when writing several files at end-of-session "
+                "(e.g. updating _changelog.md + _start.md + _index.md together). "
+                "NOT atomic — the Local REST API has no transaction primitive, so a "
+                "later op failing leaves earlier ops applied. Returns a per-operation "
+                "result list with {index, mode, path, ok, error} so callers can detect "
+                "partial application and roll back if needed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "operations": {
+                        "type": "array",
+                        "description": "Ordered list of operations.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "mode": {
+                                    "type": "string",
+                                    "enum": ["put", "append", "patch", "delete"],
+                                    "description": (
+                                        "put = create/overwrite (replaces existing content); "
+                                        "append = add to end; "
+                                        "patch = surgical insert at heading/block/frontmatter; "
+                                        "delete = remove file."
+                                    )
+                                },
+                                "path": {
+                                    "type": "string",
+                                    "description": "Vault-relative path"
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "File body (put/append) or insert payload (patch). Omit for delete."
+                                },
+                                "operation": {
+                                    "type": "string",
+                                    "enum": ["append", "prepend", "replace"],
+                                    "description": "patch only: how the content combines with the target"
+                                },
+                                "target_type": {
+                                    "type": "string",
+                                    "enum": ["heading", "block", "frontmatter"],
+                                    "description": "patch only: kind of target"
+                                },
+                                "target": {
+                                    "type": "string",
+                                    "description": "patch only: heading path / block id / frontmatter field name"
+                                }
+                            },
+                            "required": ["mode", "path"]
+                        }
+                    }
+                },
+                "required": ["operations"]
+            }
+        )
+
+    def run_tool(self, args: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+        ops = args.get("operations")
+        if not isinstance(ops, list) or not ops:
+            raise RuntimeError("operations must be a non-empty array")
+        api = obsidian.Obsidian(api_key=api_key, host=obsidian_host)
+        results = api.batch_write(ops)
+        summary = {
+            "total": len(results),
+            "ok": sum(1 for r in results if r["ok"]),
+            "failed": sum(1 for r in results if not r["ok"]),
+            "results": results,
+        }
+        return [TextContent(type="text", text=json.dumps(summary, indent=2))]

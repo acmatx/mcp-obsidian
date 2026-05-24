@@ -6,13 +6,22 @@ from typing import Any
 
 class Obsidian():
     def __init__(
-            self, 
+            self,
             api_key: str,
             protocol: str = os.getenv('OBSIDIAN_PROTOCOL', 'https').lower(),
             host: str = str(os.getenv('OBSIDIAN_HOST', '127.0.0.1')),
             port: int = int(os.getenv('OBSIDIAN_PORT', '27124')),
-            verify_ssl: bool = False,
+            verify_ssl: bool | None = None,
         ):
+        # verify_ssl defaults: respect OBSIDIAN_VERIFY_SSL env (any of "1"/"true"/"yes"
+        # → True, "0"/"false"/"no" → False). If unset, default True for HTTPS targets
+        # (real CA cert expected, e.g. via Tailscale Serve) and False for HTTP.
+        if verify_ssl is None:
+            env_val = os.getenv("OBSIDIAN_VERIFY_SSL")
+            if env_val is not None:
+                verify_ssl = env_val.strip().lower() in ("1", "true", "yes", "on")
+            else:
+                verify_ssl = (protocol or "https").lower() == "https"
         self.api_key = api_key
         
         if protocol == 'http':
@@ -381,6 +390,90 @@ class Obsidian():
             return response.json()
 
         return self._safe_call(call_fn)
+
+
+    def dataview(self, query: str) -> Any:
+        """Execute an arbitrary Dataview DQL query against the vault.
+
+        The Local REST API plugin parses the query server-side using the
+        installed Dataview plugin. Requires Dataview to be installed and
+        enabled in Obsidian.
+
+        Args:
+            query: DQL query string, e.g. 'TABLE file.mtime FROM "AI" LIMIT 10'.
+
+        Returns:
+            Parsed JSON results. Shape depends on query type:
+            - TABLE → list of {filename, result: {col: value, ...}}
+            - LIST  → list of {filename, result: <value>}
+            - TASK  → list of {filename, result: [task, ...]}
+        """
+        url = f"{self.get_base_url()}/search/"
+        headers = self._get_headers() | {
+            'Content-Type': 'application/vnd.olrapi.dataview.dql+txt'
+        }
+
+        def call_fn():
+            response = requests.post(
+                url,
+                headers=headers,
+                data=query.encode('utf-8'),
+                verify=self.verify_ssl,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        return self._safe_call(call_fn)
+
+    def batch_write(self, operations: list[dict]) -> list[dict]:
+        """Apply a sequence of write operations to the vault.
+
+        Each operation is one of:
+          - {"mode": "put",    "path": str, "content": str}              — create or overwrite
+          - {"mode": "append", "path": str, "content": str}              — append to file
+          - {"mode": "patch",  "path": str, "content": str,
+             "operation": "append"|"prepend"|"replace",
+             "target_type": "heading"|"block"|"frontmatter",
+             "target": str}                                              — surgical patch
+          - {"mode": "delete", "path": str}                              — delete file
+
+        Operations are applied IN ORDER. The method continues past individual
+        failures and returns a per-operation result list. Each result is
+        {"ok": bool, "error": str|None, "path": str, "mode": str}.
+
+        This is NOT atomic — the Local REST API has no transaction primitive.
+        Partial application IS possible if a later op fails. Callers that need
+        all-or-nothing semantics should pair this with a read-mtime-before /
+        check-mtime-after guard, or roll back manually using the result list.
+        """
+        results: list[dict] = []
+        for i, op in enumerate(operations):
+            mode = op.get("mode", "")
+            path = op.get("path", "")
+            entry: dict = {"index": i, "mode": mode, "path": path, "ok": False, "error": None}
+            try:
+                if mode == "put":
+                    self.put_content(path, op.get("content", ""))
+                elif mode == "append":
+                    self.append_content(path, op.get("content", ""))
+                elif mode == "patch":
+                    self.patch_content(
+                        path,
+                        op.get("operation", ""),
+                        op.get("target_type", ""),
+                        op.get("target", ""),
+                        op.get("content", ""),
+                    )
+                elif mode == "delete":
+                    self.delete_file(path)
+                else:
+                    raise ValueError(f"Unknown mode: {mode!r}")
+                entry["ok"] = True
+            except Exception as e:
+                entry["error"] = str(e)
+            results.append(entry)
+        return results
 
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$")
