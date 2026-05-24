@@ -1,4 +1,3 @@
-import io
 import re
 import requests
 import urllib.parse
@@ -433,10 +432,10 @@ class Obsidian():
                     changed.append(k)
                 post.metadata[k] = v
 
-        # Serialize back. python-frontmatter writes `---\n<yaml>---\n\n<content>`.
-        buf = io.BytesIO()
-        frontmatter.dump(post, buf)
-        new_text = buf.getvalue().decode("utf-8")
+        # Serialize back. dumps() returns the full note text with frontmatter
+        # block (`---\n<yaml>---\n\n<content>`). We avoid frontmatter.dump()
+        # because it writes str to its stream arg, which fails on BytesIO.
+        new_text = frontmatter.dumps(post)
 
         self.put_content(filepath, new_text)
         return {"changed": changed, "frontmatter": dict(post.metadata)}
